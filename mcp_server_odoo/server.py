@@ -69,6 +69,33 @@ def create_fastmcp_app(
     return app
 
 
+def build_google_auth():
+    """Return (AuthSettings, GoogleTokenVerifier) when MCP_REQUIRE_AUTH is set,
+    else (None, None).
+
+    Keeps the default (public) behavior unchanged: without the env vars the HTTP
+    transport stays unauthenticated and stdio/local usage is untouched. When
+    enabled, the streamable-http endpoint rejects any request whose Bearer token
+    is not a Google token for a user in MCP_ALLOWED_DOMAIN.
+    """
+    if os.environ.get("MCP_REQUIRE_AUTH", "").lower() not in ("1", "true", "yes"):
+        return None, None
+
+    from mcp.server.auth.settings import AuthSettings
+
+    from .auth_google import GoogleTokenVerifier
+
+    domain = os.environ["MCP_ALLOWED_DOMAIN"]
+    resource_url = os.environ.get("OAUTH_RESOURCE_SERVER_URL")
+    verifier = GoogleTokenVerifier(allowed_domain=domain)
+    auth = AuthSettings(
+        issuer_url="https://accounts.google.com",
+        resource_server_url=resource_url,
+        required_scopes=[],
+    )
+    return auth, verifier
+
+
 class OdooMCPServer:
     """Main MCP server class for Odoo integration.
 
@@ -97,7 +124,8 @@ class OdooMCPServer:
         self.resource_handler = None
         self.tool_handler = None
 
-        self.app = create_fastmcp_app()
+        auth_settings, token_verifier = build_google_auth()
+        self.app = create_fastmcp_app(auth=auth_settings, token_verifier=token_verifier)
 
         logger.info(f"Initialized Odoo MCP Server v{SERVER_VERSION}")
 
