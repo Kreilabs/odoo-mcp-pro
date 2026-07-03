@@ -289,14 +289,6 @@ class OdooMCPServer:
 
             asgi_app = self.app.streamable_http_app()
 
-            # TEMPORARY (spike): log the structure of the Authorization header to
-            # learn what credential Gemini Enterprise sends. Remove after Task 1
-            # of the Opción-B plan (see plan Task 5).
-            if os.environ.get("MCP_DEBUG_AUTH_HEADER"):
-                from ._auth_probe import AuthHeaderProbe
-
-                asgi_app = AuthHeaderProbe(asgi_app)
-
             from .usage import track_event
 
             track_event(
