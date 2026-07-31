@@ -9,11 +9,11 @@ from mcp.types import ToolAnnotations
 
 from ..access_control import AccessControlError
 from ..error_handling import NotFoundError, ValidationError
-from ..error_sanitizer import ErrorSanitizer
 from ..logging_config import perf_logger
 from ..odoo_connection import OdooConnectionError
 from ..schemas import FieldSelectionMetadata, RecordResult, SearchResult
 from ._common import _current_sub, logger, run_blocking
+from ._field_hints import describe_error, enrich_unknown_field_error
 
 
 class QueryToolsMixin:
@@ -137,6 +137,7 @@ class QueryToolsMixin:
         connection_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle search tool request."""
+        connection = None
         try:
             connection, access_controller, sub = await self._get_user_context(connection_selector)
             with perf_logger.track_operation("tool_search", model=model):
@@ -260,11 +261,12 @@ class QueryToolsMixin:
         except AccessControlError as e:
             raise ValidationError(f"Access denied: {e}") from e
         except OdooConnectionError as e:
-            raise ValidationError(f"Connection error: {e}") from e
+            hint = await enrich_unknown_field_error(e, connection, model)
+            raise ValidationError(hint or f"Connection error: {e}") from e
         except Exception as e:
             logger.error(f"Error in search_records tool: {e}")
-            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
-            raise ValidationError(f"Search failed: {sanitized_msg}") from e
+            detail = await describe_error(e, connection, model)
+            raise ValidationError(f"Search failed: {detail}") from e
 
     async def _handle_get_record_tool(
         self,
@@ -274,6 +276,7 @@ class QueryToolsMixin:
         connection_selector: Optional[str] = None,
     ) -> RecordResult:
         """Handle get record tool request."""
+        connection = None
         try:
             connection, access_controller, sub = await self._get_user_context(connection_selector)
             with perf_logger.track_operation("tool_get_record", model=model):
@@ -349,8 +352,9 @@ class QueryToolsMixin:
         except AccessControlError as e:
             raise ValidationError(f"Access denied: {e}") from e
         except OdooConnectionError as e:
-            raise ValidationError(f"Connection error: {e}") from e
+            hint = await enrich_unknown_field_error(e, connection, model)
+            raise ValidationError(hint or f"Connection error: {e}") from e
         except Exception as e:
             logger.error(f"Error in get_record tool: {e}")
-            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
-            raise ValidationError(f"Failed to get record: {sanitized_msg}") from e
+            detail = await describe_error(e, connection, model)
+            raise ValidationError(f"Failed to get record: {detail}") from e

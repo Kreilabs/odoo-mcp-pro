@@ -13,6 +13,7 @@ from ..logging_config import perf_logger
 from ..odoo_connection import OdooConnectionError
 from ..schemas import CreateResult, DeleteResult, UpdateResult
 from ._common import _current_sub, logger, run_blocking
+from ._field_hints import describe_error, enrich_unknown_field_error
 
 
 class CrudToolsMixin:
@@ -37,9 +38,15 @@ class CrudToolsMixin:
         ) -> CreateResult:
             """Create a new record in an Odoo model.
 
+            Call `get_model_fields(model)` first unless you have already
+            introspected this model. Odoo field names are defined per database
+            and are NOT guessable — a model may use `titulo` instead of `name`,
+            or `fecha` instead of `date`. One wrong name fails the whole call.
+
             Args:
                 model: The Odoo model name (e.g., 'res.partner')
-                values: Field values for the new record
+                values: Field values for the new record, keyed by the exact
+                    technical field names from get_model_fields
                 connection: Optional. Target a specific Odoo connection by the id
                     from server_info's `connections` list. Hosted multi-tenant
                     only; ignored when self-hosting a single connection.
@@ -68,10 +75,15 @@ class CrudToolsMixin:
         ) -> UpdateResult:
             """Update an existing record.
 
+            Call `get_model_fields(model)` first unless you have already
+            introspected this model — Odoo field names are database-specific
+            and often not in English.
+
             Args:
                 model: The Odoo model name (e.g., 'res.partner')
                 record_id: The record ID to update
-                values: Field values to update
+                values: Field values to update, keyed by the exact technical
+                    field names from get_model_fields
                 connection: Optional. Target a specific Odoo connection by the id
                     from server_info's `connections` list. Hosted multi-tenant
                     only; ignored when self-hosting a single connection.
@@ -120,6 +132,7 @@ class CrudToolsMixin:
         connection_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle create record tool request."""
+        connection = None
         try:
             connection, access_controller, sub = await self._get_user_context(
                 connection_selector, writes=True
@@ -187,11 +200,12 @@ class CrudToolsMixin:
         except AccessControlError as e:
             raise ValidationError(f"Access denied: {e}") from e
         except OdooConnectionError as e:
-            raise ValidationError(f"Connection error: {e}") from e
+            hint = await enrich_unknown_field_error(e, connection, model)
+            raise ValidationError(hint or f"Connection error: {e}") from e
         except Exception as e:
             logger.error(f"Error in create_record tool: {e}")
-            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
-            raise ValidationError(f"Failed to create record: {sanitized_msg}") from e
+            detail = await describe_error(e, connection, model)
+            raise ValidationError(f"Failed to create record: {detail}") from e
 
     async def _handle_update_record_tool(
         self,
@@ -201,6 +215,7 @@ class CrudToolsMixin:
         connection_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle update record tool request."""
+        connection = None
         try:
             connection, access_controller, sub = await self._get_user_context(
                 connection_selector, writes=True
@@ -279,11 +294,12 @@ class CrudToolsMixin:
         except AccessControlError as e:
             raise ValidationError(f"Access denied: {e}") from e
         except OdooConnectionError as e:
-            raise ValidationError(f"Connection error: {e}") from e
+            hint = await enrich_unknown_field_error(e, connection, model)
+            raise ValidationError(hint or f"Connection error: {e}") from e
         except Exception as e:
             logger.error(f"Error in update_record tool: {e}")
-            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
-            raise ValidationError(f"Failed to update record: {sanitized_msg}") from e
+            detail = await describe_error(e, connection, model)
+            raise ValidationError(f"Failed to update record: {detail}") from e
 
     async def _handle_delete_record_tool(
         self,

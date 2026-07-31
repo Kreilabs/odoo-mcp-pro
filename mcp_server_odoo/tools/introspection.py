@@ -1,4 +1,5 @@
-"""Introspection MCP tools: list_models, list_resource_templates, server_info."""
+"""Introspection MCP tools: list_models, get_model_fields, list_resource_templates,
+server_info."""
 
 from __future__ import annotations
 
@@ -6,15 +7,54 @@ from typing import Any, Dict, Optional
 
 from mcp.types import ToolAnnotations
 
+from ..access_control import AccessControlError
 from ..error_handling import ValidationError
 from ..error_sanitizer import ErrorSanitizer
 from ..logging_config import perf_logger
-from ..schemas import ModelsResult, ResourceTemplatesResult, ServerInfoResult
+from ..odoo_connection import OdooConnectionError
+from ..schemas import (
+    ModelFieldsResult,
+    ModelsResult,
+    ResourceTemplatesResult,
+    ServerInfoResult,
+)
 from ._common import _current_sub, logger, run_blocking
+from ._field_hints import is_writable_field
+
+# Odoo help texts run long; enough to disambiguate a field, not enough to
+# crowd out the field list itself.
+_MAX_HELP_CHARS = 200
+
+
+def _to_field_definition(name: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Map one entry of a ``fields_get`` response to a FieldDefinition dict."""
+    raw_selection = meta.get("selection")
+    selection = []
+    if isinstance(raw_selection, (list, tuple)):
+        for option in raw_selection:
+            # Odoo yields [value, label] pairs; skip anything malformed rather
+            # than failing the whole introspection call.
+            if isinstance(option, (list, tuple)) and len(option) == 2:
+                selection.append({"value": str(option[0]), "label": str(option[1])})
+
+    help_text = meta.get("help") or None
+    if help_text and len(help_text) > _MAX_HELP_CHARS:
+        help_text = help_text[:_MAX_HELP_CHARS].rstrip() + "..."
+
+    return {
+        "name": name,
+        "type": meta.get("type") or "unknown",
+        "string": meta.get("string") or name,
+        "required": bool(meta.get("required")),
+        "readonly": bool(meta.get("readonly")),
+        "relation": meta.get("relation") or None,
+        "selection": selection,
+        "help": help_text,
+    }
 
 
 class IntrospectionToolsMixin:
-    """list_models, list_resource_templates and server_info tools."""
+    """list_models, get_model_fields, list_resource_templates and server_info tools."""
 
     def _register_introspection_tools(self):
         """Register introspection tool handlers with FastMCP."""
@@ -43,6 +83,50 @@ class IntrospectionToolsMixin:
             result = await self._handle_list_models_tool(connection)
             self._track_usage(_current_sub.get(), "list_models")
             return ModelsResult(**result)
+
+        @self.app.tool(
+            title="Get Model Fields",
+            annotations=ToolAnnotations(
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+        async def get_model_fields(
+            model: str,
+            include_readonly: bool = False,
+            connection: Optional[str] = None,
+        ) -> ModelFieldsResult:
+            """Get the real field names and types of an Odoo model.
+
+            Call this BEFORE create_record, update_record, create_records or
+            import_records on any model you have not already introspected in
+            this conversation, and before filtering a search on an unfamiliar
+            field.
+
+            Odoo field names are NOT guessable. They are defined per database
+            and are often in the database's own language, so a model may use
+            `titulo` rather than `name`, or `fecha` rather than `date`. Writing
+            a guessed name fails the whole call.
+
+            Args:
+                model: The Odoo model name (e.g., 'res.partner')
+                include_readonly: Include fields that cannot be written.
+                    Default False, which returns the fields you can actually
+                    set when creating or updating a record.
+                connection: Optional. Target a specific Odoo connection by the id
+                    from server_info's `connections` list. Hosted multi-tenant
+                    only; ignored when self-hosting a single connection.
+
+            Returns:
+                Field definitions with technical name, type, whether the field
+                is required, the target model for relations, and the allowed
+                values for selection fields.
+            """
+            result = await self._handle_get_model_fields_tool(model, include_readonly, connection)
+            self._track_usage(_current_sub.get(), "get_model_fields")
+            return ModelFieldsResult(**result)
 
         @self.app.tool(
             title="List Resource Templates",
@@ -148,6 +232,47 @@ class IntrospectionToolsMixin:
                 info.connections = available
 
             return info
+
+    async def _handle_get_model_fields_tool(
+        self,
+        model: str,
+        include_readonly: bool = False,
+        connection_selector: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Handle get_model_fields tool request."""
+        try:
+            connection, access_controller, sub = await self._get_user_context(connection_selector)
+            with perf_logger.track_operation("tool_get_model_fields", model=model):
+                access_controller.validate_model_access(model, "read")
+
+                if not connection.is_authenticated:
+                    raise ValidationError("Not authenticated with Odoo")
+
+                # No `attributes` argument: fields_get only consults the
+                # 1-hour cache when called for the full definition, and this
+                # tool is called repeatedly. Trim the attributes in Python.
+                raw = await run_blocking(connection, connection.fields_get, model)
+
+                fields = [
+                    _to_field_definition(name, meta)
+                    for name, meta in sorted(raw.items())
+                    if include_readonly or is_writable_field(meta)
+                ]
+                # Required first — that is what a failing create is missing.
+                fields.sort(key=lambda f: (not f["required"], f["name"]))
+
+                return {"model": model, "fields": fields, "total": len(fields)}
+
+        except ValidationError:
+            raise
+        except AccessControlError as e:
+            raise ValidationError(f"Access denied: {e}") from e
+        except OdooConnectionError as e:
+            raise ValidationError(f"Connection error: {e}") from e
+        except Exception as e:
+            logger.error(f"Error in get_model_fields tool: {e}")
+            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
+            raise ValidationError(f"Failed to get model fields: {sanitized_msg}") from e
 
     async def _handle_list_models_tool(
         self, connection_selector: Optional[str] = None

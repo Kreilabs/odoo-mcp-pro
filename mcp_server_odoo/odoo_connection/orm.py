@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from ..error_sanitizer import ErrorSanitizer
 from ..exceptions import OdooConnectionError
+from ..xmlrpc_transport import is_retryable_transport_error
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +85,24 @@ class OdooConnectionOrmMixin:
             # Log the operation
             logger.debug(f"Executing {method} on {model} with args={args}, kwargs={kwargs}")
 
-            # Execute via object proxy
-            result = self.object_proxy.execute_kw(
-                self._database, self._uid, password_or_token, model, method, args, kwargs
-            )
+            # Execute via object proxy. Cloud Run freezes instances between
+            # requests, which kills the idle socket cached by the pooled
+            # Transport; the first call afterwards dies on the corpse while the
+            # Transport self-heals for the next one. Replay once when the
+            # failure is provably a dead socket and replaying is safe — see
+            # is_retryable_transport_error for the write-safety rule.
+            for attempt in (0, 1):
+                try:
+                    result = self.object_proxy.execute_kw(
+                        self._database, self._uid, password_or_token, model, method, args, kwargs
+                    )
+                    break
+                except Exception as e:
+                    if attempt or not is_retryable_transport_error(e, method):
+                        raise
+                    logger.warning(
+                        f"Stale XML-RPC socket on {method} on {model} ({e!r}); retrying once"
+                    )
 
             logger.debug("Operation completed successfully")
             return result

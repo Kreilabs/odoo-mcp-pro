@@ -80,6 +80,42 @@ class ModelsResult(BaseModel):
     error: Optional[str] = Field(default=None, description="Error message if model listing failed")
 
 
+# --- Model Fields ---
+
+
+class SelectionOption(BaseModel):
+    """One allowed value of a selection field."""
+
+    value: str = Field(description="Value to write (e.g. 'borrador')")
+    label: str = Field(description="Human-readable label (e.g. 'Borrador')")
+
+
+class FieldDefinition(BaseModel):
+    """Definition of a single field on an Odoo model."""
+
+    name: str = Field(description="Technical field name — write exactly this")
+    type: str = Field(description="Odoo field type (char, date, float, many2one, selection, ...)")
+    string: str = Field(description="Human-readable label, in the database language")
+    required: bool = Field(description="Must be supplied when creating a record")
+    readonly: bool = Field(description="Cannot be written directly")
+    relation: Optional[str] = Field(
+        default=None, description="Target model for many2one/one2many/many2many fields"
+    )
+    selection: List[SelectionOption] = Field(
+        default_factory=list, description="Allowed values, for selection fields"
+    )
+    help: Optional[str] = Field(default=None, description="Field tooltip from Odoo, if any")
+
+
+class ModelFieldsResult(BaseModel):
+    """Result of introspecting a model's fields."""
+
+    model: str = Field(description="Technical model name")
+    fields: List[FieldDefinition] = Field(description="Field definitions")
+    total: int = Field(description="Number of fields returned")
+    error: Optional[str] = Field(default=None, description="Error message if introspection failed")
+
+
 # --- List Resource Templates ---
 
 
