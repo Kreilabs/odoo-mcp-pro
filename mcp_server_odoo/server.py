@@ -29,12 +29,13 @@ from .resources import register_resources
 from .skills import register_skills
 from .tools import register_tools
 from .version_detect import detect_api_version
+from .vertex_compat import install_vertex_tool_sanitizer, vertex_compat_enabled
 
 # Set up logging
 logger = get_logger(__name__)
 
 # Server version — keep in sync with pyproject.toml
-SERVER_VERSION = "2.3.1"
+SERVER_VERSION = "2.4.0"
 GIT_COMMIT = os.environ.get("GIT_COMMIT", "unknown")
 _BUILD_ORIGIN = "pnl-mcp-7f3a"  # Pantalytics provenance tag
 
@@ -274,6 +275,12 @@ class OdooMCPServer:
                 self._ensure_connection()
                 self._register_resources()
                 self._register_tools()
+
+            # Rewrite advertised tool schemas into the Vertex/Gemini-safe subset
+            # so Gemini Enterprise doesn't drop the tools during discovery.
+            # Default on for the HTTP transport; opt out with MCP_VERTEX_COMPAT=0.
+            if vertex_compat_enabled():
+                install_vertex_tool_sanitizer(self.app)
 
             logger.info(f"Starting MCP server with HTTP transport on {host}:{port}...")
 

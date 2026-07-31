@@ -11,6 +11,16 @@ management UI, admin dashboard, deploy infrastructure) live in the proprietary
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-31
+
+### Added
+- **`get_model_fields`** tool: returns a model's real field names, types, required flags, relation targets and selection values. Field definitions were previously reachable only through the `odoo://{model}/fields` MCP *resource*, and some clients (Gemini Enterprise among them) consume tools but never resources — leaving those clients with no way to discover a model's schema. Defaults to writable fields only; pass `include_readonly=True` for everything.
+- **Self-correcting unknown-field errors**: when Odoo rejects a field name, `create_record`, `update_record`, `create_records`, `import_records`, `search_records` and `get_record` now answer with the field names that *do* exist, plus a pointer to `get_model_fields`. Previously the client got `Invalid field 'x' in request` — a dead end that invites another guess. Field names are not guessable: a model may name them in the database's own language (`titulo`, `fecha`). The lookup is served from the existing 1-hour field cache.
+
+### Fixed
+- **Vertex sanitizer broke every tool call returning a null optional field**: the low-level MCP server caches whatever `tools/list` returns and validates each `tools/call` result against that cached schema with `jsonschema`, so the sanitized schema was never advertising-only as its docstring claimed. Rewriting `Optional[str]` to `{"type": "string", "nullable": true}` therefore failed at runtime — `jsonschema` ignores `nullable` and enforces `type` — taking out `server_info`, `list_models` and `get_model_fields` with `Output validation error: None is not of type 'string'`. An AI client reads that as "the connector is not available". Vertex has no NULL type and expresses nullability the OpenAPI way, so no single document satisfies both consumers; `outputSchema` is now dropped from the advertised tools instead of rewritten. `structuredContent` is still returned.
+- **Stale XML-RPC sockets on serverless hosts**: platforms that freeze instances between requests (Cloud Run, Lambda) reap the idle socket held by the pooled `Transport`, so the next call died with `[Errno 9] Bad file descriptor`, `Request-sent` (`CannotSendRequest`) or `Idle` (`ResponseNotReady`). The stdlib's own retry misses all three — EBADF has the wrong errno, and the other two are `HTTPException`, not `OSError`. `execute_kw` now replays such a call once. Pre-send failures are replayed for any method (the request provably never left the process); other socket errors are replayed only for read methods, so a `create`/`write` that may have reached Odoo is never applied twice.
+
 ## [2.2.0] - 2026-06-18
 
 ### Added

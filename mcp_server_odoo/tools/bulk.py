@@ -18,6 +18,7 @@ from ..schemas import (
     ImportResult,
 )
 from ._common import MAX_BULK_SIZE, _current_sub, logger, run_blocking
+from ._field_hints import describe_error, enrich_unknown_field_error
 
 
 class BulkToolsMixin:
@@ -48,9 +49,14 @@ class BulkToolsMixin:
             importing data, creating batches of records, or any scenario with
             more than a few records.
 
+            Call `get_model_fields(model)` first unless you have already
+            introspected this model. Odoo field names are database-specific and
+            NOT guessable — one wrong name fails the entire batch.
+
             Args:
                 model: The Odoo model name (e.g., 'res.partner')
-                vals_list: List of dicts, each containing field values for one record.
+                vals_list: List of dicts, each containing field values for one record,
+                    keyed by the exact technical field names from get_model_fields.
                     Example: [{"name": "Alice"}, {"name": "Bob"}]
                 connection: Optional. Target a specific Odoo connection by the id
                     from server_info's `connections` list. Hosted multi-tenant
@@ -155,6 +161,11 @@ class BulkToolsMixin:
 
             Uses the same mechanism as Odoo's built-in CSV import.
 
+            Call `get_model_fields(model)` first unless you have already
+            introspected this model — the `fields` list below must hold exact
+            technical field names, which are database-specific and often not
+            in English.
+
             Args:
                 model: The Odoo model name (e.g., 'res.partner')
                 fields: List of field names matching the data columns.
@@ -190,6 +201,7 @@ class BulkToolsMixin:
         connection_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle bulk create tool request."""
+        connection = None
         try:
             connection, access_controller, sub = await self._get_user_context(
                 connection_selector, writes=True
@@ -222,11 +234,12 @@ class BulkToolsMixin:
         except AccessControlError as e:
             raise ValidationError(f"Access denied: {e}") from e
         except OdooConnectionError as e:
-            raise ValidationError(f"Connection error: {e}") from e
+            hint = await enrich_unknown_field_error(e, connection, model)
+            raise ValidationError(hint or f"Connection error: {e}") from e
         except Exception as e:
             logger.error(f"Error in create_records tool: {e}")
-            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
-            raise ValidationError(f"Bulk create failed: {sanitized_msg}") from e
+            detail = await describe_error(e, connection, model)
+            raise ValidationError(f"Bulk create failed: {detail}") from e
 
     async def _handle_update_records_tool(
         self,
@@ -236,6 +249,7 @@ class BulkToolsMixin:
         connection_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle bulk update tool request."""
+        connection = None
         try:
             connection, access_controller, sub = await self._get_user_context(
                 connection_selector, writes=True
@@ -268,11 +282,12 @@ class BulkToolsMixin:
         except AccessControlError as e:
             raise ValidationError(f"Access denied: {e}") from e
         except OdooConnectionError as e:
-            raise ValidationError(f"Connection error: {e}") from e
+            hint = await enrich_unknown_field_error(e, connection, model)
+            raise ValidationError(hint or f"Connection error: {e}") from e
         except Exception as e:
             logger.error(f"Error in update_records tool: {e}")
-            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
-            raise ValidationError(f"Bulk update failed: {sanitized_msg}") from e
+            detail = await describe_error(e, connection, model)
+            raise ValidationError(f"Bulk update failed: {detail}") from e
 
     async def _handle_delete_records_tool(
         self,
@@ -326,6 +341,7 @@ class BulkToolsMixin:
         connection_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle import_records tool request using Odoo's load() method."""
+        connection = None
         try:
             connection, access_controller, sub = await self._get_user_context(
                 connection_selector, writes=True
@@ -420,8 +436,9 @@ class BulkToolsMixin:
         except AccessControlError as e:
             raise ValidationError(f"Access denied: {e}") from e
         except OdooConnectionError as e:
-            raise ValidationError(f"Connection error: {e}") from e
+            hint = await enrich_unknown_field_error(e, connection, model)
+            raise ValidationError(hint or f"Connection error: {e}") from e
         except Exception as e:
             logger.error(f"Error in import_records tool: {e}")
-            sanitized_msg = ErrorSanitizer.sanitize_message(str(e))
-            raise ValidationError(f"Import failed: {sanitized_msg}") from e
+            detail = await describe_error(e, connection, model)
+            raise ValidationError(f"Import failed: {detail}") from e

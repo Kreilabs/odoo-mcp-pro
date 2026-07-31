@@ -12,7 +12,8 @@ You are connected to an Odoo ERP instance via MCP. Use this knowledge to make be
 
 - **res.partner**: Contacts (companies and individuals). Used everywhere. NOT the same as CRM leads.
 - **product.template**: Product catalog (shared fields). **product.product**: Variants (size, color).
-- **ir.model**: List of all models. Use `list_models` to discover available models.
+- **ir.model**: List of all models. Use `list_models` to discover available models,
+  then `get_model_fields` to learn a model's real field names before writing to it.
 - **External IDs**: Use `import_records` with `__import__.your_id` for idempotent imports. Running twice = no duplicates.
 
 ## App Selection Guide
@@ -80,7 +81,11 @@ Ask yourself: what is the user trying to do?
 ## Common Patterns
 
 ### Creating records
-- Always check which fields are required: `search_records` with `fields=["__all__"]` on a small set first.
+- **Call `get_model_fields` first** on any model you have not already introspected.
+  Field names are defined per database and are NOT guessable — a model may use
+  `titulo` instead of `name`, or `fecha` instead of `date`. One wrong name fails
+  the whole call. This also tells you which fields are required and the allowed
+  values of selection fields.
 - Use `import_records` for bulk data with external IDs (idempotent).
 - Use `create_record`/`create_records` for one-off creates.
 
