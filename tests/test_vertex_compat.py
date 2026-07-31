@@ -8,7 +8,7 @@ server's own live tool definitions.
 
 from __future__ import annotations
 
-from mcp.types import ListToolsRequest
+from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
 
 from mcp_server_odoo.server import create_fastmcp_app
 from mcp_server_odoo.tools import register_tools
@@ -154,6 +154,48 @@ async def test_every_tool_is_vertex_safe_after_sanitizing():
         if tool.outputSchema:
             problems += _violations(sanitize_schema(tool.outputSchema), f"{tool.name}:out")
         assert not problems, f"{tool.name} still Vertex-incompatible: {problems}"
+
+
+async def test_sanitizer_does_not_break_runtime_output_validation():
+    """Regression: the sanitizer must not make live tool calls fail.
+
+    The low-level server caches whatever tools/list returns and validates every
+    tools/call result against that cached schema with jsonschema. Rewriting
+    Optional[str] to {"type": "string", "nullable": true} therefore broke every
+    tool that actually returned None in an optional output field — jsonschema
+    ignores `nullable` and enforces `type`. In production this took out
+    server_info, list_models and get_model_fields with
+    "Output validation error: None is not of type 'string'", which reads to an
+    AI client as "the connector is not available".
+
+    Exercised through the low-level request handlers, not FastMCP.call_tool:
+    only that path consults the cache, which is why unit tests missed it.
+    """
+    app = _build_app_with_tools()
+    install_vertex_tool_sanitizer(app)
+    server = app._mcp_server
+
+    # Populate the cache the same way a real client does.
+    listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
+    assert listed.root.tools
+
+    # server_info returns None for several optional fields when there is no
+    # live Odoo connection — exactly the shape that used to fail.
+    result = await server.request_handlers[CallToolRequest](
+        CallToolRequest(
+            method="tools/call",
+            params=CallToolRequestParams(name="server_info", arguments={}),
+        )
+    )
+    text = result.root.content[0].text if result.root.content else ""
+    assert "Output validation error" not in text, text
+    # The payload still reaches the client even without an advertised schema.
+    assert result.root.structuredContent
+
+    # An advertised outputSchema is what arms that validation, so none of the
+    # tools may carry one once sanitized.
+    with_output = [t.name for t in listed.root.tools if t.outputSchema is not None]
+    assert not with_output, f"outputSchema still advertised for {with_output}"
 
 
 async def test_install_rewrites_tools_list_handler():

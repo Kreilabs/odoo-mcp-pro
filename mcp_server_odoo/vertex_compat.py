@@ -16,9 +16,19 @@ Anthropic/OpenAI parsers tolerate all of the above, so the server works from
 Claude/ChatGPT but Gemini silently drops the tools and the model "describes a
 plan" instead of calling them.
 
-This module rewrites the announced schemas into the Vertex-safe subset. It only
-touches what ``tools/list`` advertises — ``tools/call`` still validates results
-against FastMCP's original internal schema, so runtime behavior is unchanged.
+This module rewrites the announced schemas into the Vertex-safe subset.
+
+``outputSchema`` is dropped rather than rewritten. The low-level MCP server
+caches whatever ``tools/list`` returns and validates every ``tools/call``
+result against that cached schema with ``jsonschema``, so the announced schema
+is *not* advertising-only. The two consumers want incompatible things: Vertex
+expresses "may be null" as OpenAPI's ``nullable: true`` and has no NULL type,
+while ``jsonschema`` ignores ``nullable`` and enforces ``type``, so any
+``Optional[...]`` field that is actually None fails validation
+("None is not of type 'string'"). No single document satisfies both. Since an
+``outputSchema`` is optional in MCP and Vertex needs the *input* schema to
+build its function declaration, dropping it fixes the conflict outright;
+``structuredContent`` is still returned to the client either way.
 """
 
 from __future__ import annotations
@@ -154,11 +164,11 @@ def _finalize(out: dict) -> dict:
 
 
 def sanitize_tool(tool):
-    """Return a copy of an ``mcp.types.Tool`` with Vertex-safe schemas."""
-    update: dict[str, Any] = {"inputSchema": sanitize_schema(tool.inputSchema)}
-    if tool.outputSchema:
-        update["outputSchema"] = sanitize_schema(tool.outputSchema)
-    return tool.model_copy(update=update)
+    """Return a copy of an ``mcp.types.Tool`` with a Vertex-safe input schema
+    and no output schema (see the module docstring for why it is dropped)."""
+    return tool.model_copy(
+        update={"inputSchema": sanitize_schema(tool.inputSchema), "outputSchema": None}
+    )
 
 
 def install_vertex_tool_sanitizer(app) -> None:
